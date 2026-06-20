@@ -65,6 +65,16 @@ MSRP = {
 
 LEGIT_SCORE = {"fair_price": 100, "below_market": 80, "unverified": 50, "above_msrp": 30, "suspicious_low": 10}
 
+# Composite score weights (must sum to 100)
+SCORE_WEIGHTS = {
+    "value": 25,       # Price vs MSRP
+    "savings": 25,     # Real price - quoted
+    "trust": 20,       # User trustworthiness
+    "recency": 15,     # How recent the post is
+    "description": 10, # Description quality/completeness
+    "ram": 5,          # RAM bonus
+}
+
 
 def load_token():
     with open(TOKEN_PATH) as f:
@@ -263,6 +273,88 @@ def value_score(price, ptype):
     mid = (low + high) / 2
     return max(0, min(100, int((mid - price) / mid * 100 + 50)))
 
+def real_price(ptype):
+    """Return MSRP midpoint as real market price."""
+    if ptype not in MSRP: return 0
+    low, high = MSRP[ptype]
+    return (low + high) // 2
+
+def bargain_price(price, ptype):
+    """Suggest a bargain price (10-15% below quoted, or near low MSRP)."""
+    if ptype not in MSRP: return int(price * 0.85)
+    low, high = MSRP[ptype]
+    # Target: 10% below quoted, but not below 70% of low MSRP
+    target = int(price * 0.90)
+    floor = int(low * 0.70)
+    return max(target, floor)
+
+def description_score(desc):
+    """Score description quality 0-100 based on completeness."""
+    if not desc: return 0
+    score = 0
+    d = desc.lower()
+    # Length bonus
+    if len(desc) > 100: score += 20
+    if len(desc) > 200: score += 10
+    # Specific details
+    if any(w in d for w in ["battery", "health", "cycle"]): score += 20
+    if any(w in d for w in ["warranty", "apple care", "applecare"]): score += 15
+    if any(w in d for w in ["condition", "mint", "excellent", "like new"]): score += 10
+    if any(w in d for w in ["price", "fixed", "negotiable"]): score += 10
+    if any(w in d for w in ["reason", "selling", "upgrade"]): score += 10
+    if any(w in d for w in ["box", "invoice", "bill"]): score += 5
+    # Negative signals
+    if any(w in d for w in ["want to buy", "wtb", "looking for"]): score -= 30
+    if any(w in d for w in ["damaged", "broken", "not working"]): score -= 20
+    return max(0, min(100, score))
+
+def recency_score(days_ago):
+    """Score recency 0-100 (newer = higher)."""
+    if days_ago <= 0: return 100
+    if days_ago <= 1: return 95
+    if days_ago <= 3: return 90
+    if days_ago <= 7: return 80
+    if days_ago <= 14: return 65
+    if days_ago <= 21: return 50
+    if days_ago <= 28: return 35
+    return 20
+
+def composite_score(price, ptype, ram, utrust, days_ago, desc):
+    """Calculate normalized composite score 0-100."""
+    # Value component (0-100)
+    vs = value_score(price, ptype)
+    
+    # Savings component (0-100): % off real price
+    rp = real_price(ptype)
+    if rp > 0:
+        savings_pct = max(0, (rp - price) / rp * 100)
+        savings = min(100, int(savings_pct * 2))  # 50% off = 100 score
+    else:
+        savings = 50
+    
+    # Trust component (already 0-100)
+    trust = utrust
+    
+    # Recency component (0-100)
+    rec = recency_score(days_ago)
+    
+    # Description component (0-100)
+    desc_s = description_score(desc)
+    
+    # RAM bonus component (0-100)
+    ram_s = min(100, RAM_BONUS.get(ram, 0) * 5) if ram else 0
+    
+    # Weighted sum
+    total = (
+        vs * SCORE_WEIGHTS["value"] / 100 +
+        savings * SCORE_WEIGHTS["savings"] / 100 +
+        trust * SCORE_WEIGHTS["trust"] / 100 +
+        rec * SCORE_WEIGHTS["recency"] / 100 +
+        desc_s * SCORE_WEIGHTS["description"] / 100 +
+        ram_s * SCORE_WEIGHTS["ram"] / 100
+    )
+    return round(total, 1)
+
 def legitimacy(price, ptype):
     if ptype not in MSRP: return ["unverified"]
     low, high = MSRP[ptype]
@@ -376,15 +468,24 @@ def main():
                 ram_bonus = RAM_BONUS.get(ram, 0) if ram else 0
                 base_score = value_score(price, ptype)
                 total_score = min(100, base_score + ram_bonus + (utrust // 5))
+                
+                # New columns
+                rp = real_price(ptype)
+                bp = bargain_price(price, ptype)
+                cs = composite_score(price, ptype, ram, utrust, days_ago, desc)
 
                 all_deals.append({
                     "title": title[:80],
                     "price": price,
                     "price_fmt": f"Rs.{int(price):,}",
+                    "real_price": rp,
+                    "real_price_fmt": f"Rs.{rp:,}" if rp else "—",
+                    "bargain_price": bp,
+                    "bargain_price_fmt": f"Rs.{bp:,}",
                     "url": olx_url,
                     "product_type": ptype,
                     "ram_gb": ram,
-                    "score": total_score,
+                    "score": cs,
                     "legitimacy": legs,
                     "legit_score": leg_score,
                     "desc": desc[:200].replace("\n", " ").replace("\r", ""),
@@ -409,8 +510,8 @@ def main():
             seen_urls.add(d["url"])
             unique.append(d)
 
-    # Sort: recency ASC (newest first), then legitimacy DESC, then price ASC
-    all_deals = sorted(unique, key=lambda d: (d["days_ago"], -d["legit_score"], d["price"]))
+    # Sort: composite score DESC (best deals first), then recency ASC, then price ASC
+    all_deals = sorted(unique, key=lambda d: (-d["score"], d["days_ago"], d["price"]))
     save_seen(seen)
 
     if not all_deals:
@@ -465,7 +566,9 @@ def main():
         top_items = []
         for d in top3:
             ram_str = f" {d['ram_gb']}GB" if d["ram_gb"] else ""
-            top_items.append(f"• **{d['product_type'].upper()}{ram_str}** — {d['price_fmt']} [{d['recency']}]")
+            savings = d["real_price"] - d["price"] if d["real_price"] > 0 else 0
+            savings_str = f" (save Rs.{savings:,})" if savings > 0 else ""
+            top_items.append(f"• **{d['product_type'].upper()}{ram_str}** — {d['price_fmt']}{savings_str} [Score: {d['score']}] [{d['recency']}]")
 
         summary = f"""# 🍎 OLX Hyderabad Mac Deals — {datetime.now().strftime('%d %B %Y')}
 
@@ -485,15 +588,19 @@ def main():
 
 ---
 
-## 📋 All Deals (sorted by newest + most legit)
+## 📋 All Deals (sorted by composite score)
 
-| # | Status | Recency | Product | RAM | Price | Value | Seller | Since | Trust | Description | Link |
-|---|--------|---------|---------|-----|-------|-------|---------|-------|-------|-------------|------|"""
+| # | Score | Status | Recency | Product | RAM | Price | Real Price | Bargain | Seller | Since | Trust | Description | Link |
+|---|-------|--------|---------|---------|-----|-------|------------|---------|---------|-------|-------|-------------|------|"""
 
         for i, d in enumerate(all_deals[:50], 1):
             leg = leg_emoji(d["legit_score"])
             rec = recency_badge(d["days_ago"])
-            star = stars(d["score"])
+            # Score display with color indicator
+            sc = d["score"]
+            if sc >= 70: score_badge = f"🟢 {sc}"
+            elif sc >= 50: score_badge = f"🟡 {sc}"
+            else: score_badge = f"🔴 {sc}"
             ram_str = f"{d['ram_gb']}GB" if d["ram_gb"] else "?"
             link_cell = f"[🔗]({d['url']})" if d["url"] else "N/A"
             desc_short = d["desc"][:40].replace("|", "/").replace("\n", " ")
@@ -502,7 +609,7 @@ def main():
             trust = f"{d['utrust']}/100"
             kyc_badge = " ✓" if d.get("kyc") else ""
             elite_badge = " ⭐" if d.get("elite") else ""
-            summary += f"\n| {i} | {leg} | {rec} | {d['product_type']} | {ram_str} | {d['price_fmt']} | {star} | {seller}{kyc_badge}{elite_badge} | {since} | {trust} | {desc_short} | {link_cell} |"
+            summary += f"\n| {i} | {score_badge} | {leg} | {rec} | {d['product_type']} | {ram_str} | {d['price_fmt']} | {d['real_price_fmt']} | {d['bargain_price_fmt']} | {seller}{kyc_badge}{elite_badge} | {since} | {trust} | {desc_short} | {link_cell} |"
 
         summary += """
 
@@ -510,10 +617,11 @@ def main():
 
 ## 🔍 Legend
 - **✅** = Fair price | **🟢** = Below market | **🟡** = Unverified | **🟠** = Above MSRP | **🔴** = Suspicious
-- **⭐⭐⭐** = Excellent value | **⭐⭐** = Good | **⭐** = Average
 - **🆕** = Today | **🟢** = 1d | **🟡** = This week | **🟠** = This month | **🔴** = Older
 - **✓** = KYC verified | **⭐** = Elite seller
-- **Trust** = User reliability score (account age + verification + status)
+- **Score** = Composite score (0-100): Value + Savings + Trust + Recency + Description + RAM
+- **Real Price** = MSRP market value | **Bargain** = Suggested negotiation target
+- **Trust** = Seller reliability (account age + verification + status)
 - **Since** = Account age (d=days, mo=months, y=years)
 - **—** = Data not available from OLX
 
