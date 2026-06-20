@@ -319,16 +319,22 @@ def recency_score(days_ago):
     if days_ago <= 28: return 35
     return 20
 
-def composite_score(price, ptype, ram, utrust, days_ago, desc):
-    """Calculate normalized composite score 0-100."""
+def composite_score(price, ptype, ram, utrust, days_ago, desc, legs):
+    """Calculate normalized composite score 0-100. Penalizes suspicious deals heavily."""
     # Value component (0-100)
     vs = value_score(price, ptype)
     
     # Savings component (0-100): % off real price
+    # Sweet spot: 10-30% off = high score, >50% off = suspicious penalty
     rp = real_price(ptype)
     if rp > 0:
         savings_pct = max(0, (rp - price) / rp * 100)
-        savings = min(100, int(savings_pct * 2))  # 50% off = 100 score
+        if savings_pct <= 30:
+            savings = min(100, int(savings_pct * 3.3))  # 30% off = 100
+        elif savings_pct <= 50:
+            savings = max(30, 100 - int((savings_pct - 30) * 3.5))  # decay
+        else:
+            savings = max(0, 30 - int((savings_pct - 50) * 2))  # penalty zone
     else:
         savings = 50
     
@@ -353,6 +359,13 @@ def composite_score(price, ptype, ram, utrust, days_ago, desc):
         desc_s * SCORE_WEIGHTS["description"] / 100 +
         ram_s * SCORE_WEIGHTS["ram"] / 100
     )
+    
+    # Heavy penalty for suspicious deals
+    if "suspicious_low" in legs:
+        total *= 0.3  # 70% penalty
+    elif "above_msrp" in legs:
+        total *= 0.7  # 30% penalty
+    
     return round(total, 1)
 
 def legitimacy(price, ptype):
@@ -472,7 +485,7 @@ def main():
                 # New columns
                 rp = real_price(ptype)
                 bp = bargain_price(price, ptype)
-                cs = composite_score(price, ptype, ram, utrust, days_ago, desc)
+                cs = composite_score(price, ptype, ram, utrust, days_ago, desc, legs)
 
                 all_deals.append({
                     "title": title[:80],
