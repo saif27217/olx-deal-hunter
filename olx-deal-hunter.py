@@ -456,7 +456,7 @@ def main():
             """Return recency badge."""
             if days == 0: return "🆕 TODAY"
             elif days <= 1: return "🟢 1d"
-            elif days <= 7: return "🟡 {days}d"
+            elif days <= 7: return f"🟡 {days}d"
             elif days <= 30: return "🟠 {w}w".format(w=days//7)
             else: return "🔴 {m}mo".format(m=days//30)
 
