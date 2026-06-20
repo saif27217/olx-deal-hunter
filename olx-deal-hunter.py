@@ -625,13 +625,19 @@ def main():
             else: score_badge = f"⚠️ {sc}"
             ram_str = f"{d['ram_gb']}GB" if d["ram_gb"] else "?"
             link_cell = f"[🔗]({d['url']})" if d["url"] else "N/A"
-            desc_short = d["desc"][:40].replace("|", "/").replace("\n", " ")
+            # Description: show 80 chars
+            desc_short = d["desc"][:80].replace("|", "/").replace("\n", " ") if d["desc"] else "—"
+            # Price color coding: 🟡 <1L, 🟢 1-1.5L, 🟠 >1.5L
+            price_val = d["price"]
+            if price_val >= 150000: price_color = f"🟠 {d['price_fmt']}"
+            elif price_val >= 100000: price_color = f"🟢 {d['price_fmt']}"
+            else: price_color = f"🟡 {d['price_fmt']}"
             seller = d["uname"][:20] if d["uname"] else "?"
             since = d["ujoin"] if d["ujoin"] and d["ujoin"] != "hidden" else "—"
             trust = f"{d['utrust']}/100"
             kyc_badge = " ✓" if d.get("kyc") else ""
             elite_badge = " ⭐" if d.get("elite") else ""
-            summary += f"\n| {i} | {score_badge} | {leg} | {rec} | {d['product_type']} | {ram_str} | {d['price_fmt']} | {d['real_price_fmt']} | {d['bargain_price_fmt']} | {seller}{kyc_badge}{elite_badge} | {since} | {trust} | {desc_short} | {link_cell} |"
+            summary += f"\n| {i} | {score_badge} | {leg} | {rec} | {d['product_type']} | {ram_str} | {price_color} | {d['real_price_fmt']} | {d['bargain_price_fmt']} | {seller}{kyc_badge}{elite_badge} | {since} | {trust} | {desc_short} | {link_cell} |"
 
         summary += """
 
@@ -641,6 +647,7 @@ def main():
 - **✅** = Fair price | **🟢** = Below market | **🟡** = Unverified | **🟠** = Above MSRP | **🔴** = Suspicious
 - **⭐⭐⭐** = Excellent (≥70) | **⭐⭐** = Good (≥50) | **⭐** = Average (≥20) | **⚠️** = Low (<20)
 - **🆕** = Today | **🟢** = 1d | **🟡** = This week | **🟠** = This month | **🔴** = Older
+- **🟡 Price** = Below ₹1 Lakh | **🟢 Price** = ₹1-1.5 Lakh | **🟠 Price** = Above ₹1.5 Lakh
 - **✓** = KYC verified | **⭐** = Elite seller (in seller column)
 - **Score** = Composite (0-100): Value + Savings + Trust + Recency + Description + RAM
 - **Real Price** = MSRP market value | **Bargain** = Suggested negotiation target
